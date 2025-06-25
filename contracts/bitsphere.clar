@@ -137,3 +137,101 @@
     last-action: uint, ;; Most recent action time
   }
 )
+
+;; Social Graph Relationship Registry
+;; Manages bidirectional user connections
+(define-map Friendships
+  {
+    user1: principal, ;; First party principal
+    user2: principal, ;; Second party principal
+  }
+  { status: uint }
+)
+
+;; User Blocking & Restriction System
+;; Manages access control and harassment prevention
+(define-map BlockedUsers
+  {
+    blocker: principal, ;; User initiating block
+    blocked: principal, ;; User being blocked
+  }
+  { timestamp: uint }
+)
+
+;; CORE UTILITY FUNCTIONS
+
+;; Rate Limiting Engine
+;; Validates user action limits and manages reset cycles
+(define-private (check-rate-limit
+    (user principal)
+    (action-type uint)
+  )
+  (let (
+      (rate-data (default-to {
+        daily-actions: u0,
+        friend-requests: u0,
+        status-updates: u0,
+        last-reset: stacks-block-height,
+      }
+        (map-get? RateLimits user)
+      ))
+      (current-time stacks-block-height)
+      (should-reset (> (- current-time (get last-reset rate-data)) RATE_LIMIT_RESET_PERIOD))
+    )
+    (if should-reset
+      ;; Reset all counters after period expiration
+      (begin
+        (map-set RateLimits user {
+          daily-actions: u1,
+          friend-requests: (if (is-eq action-type u1)
+            u1
+            u0
+          ),
+          status-updates: (if (is-eq action-type u2)
+            u1
+            u0
+          ),
+          last-reset: current-time,
+        })
+        true
+      )
+      ;; Validate against current limits
+      (and
+        (< (get daily-actions rate-data) MAX_ACTIONS_PER_DAY)
+        (or
+          (not (is-eq action-type u1))
+          (< (get friend-requests rate-data) MAX_FRIEND_REQUESTS_PER_DAY)
+        )
+        (or
+          (not (is-eq action-type u2))
+          (< (get status-updates rate-data) MAX_STATUS_UPDATES_PER_DAY)
+        )
+      )
+    )
+  )
+)
+
+;; Rate Limit Counter Update
+;; Increments appropriate counters after successful action
+(define-private (update-rate-limit
+    (user principal)
+    (action-type uint)
+  )
+  (let ((rate-data (unwrap-panic (map-get? RateLimits user))))
+    (map-set RateLimits user
+      (merge rate-data {
+        daily-actions: (+ (get daily-actions rate-data) u1),
+        friend-requests: (+ (get friend-requests rate-data)
+          (if (is-eq action-type u1)
+            u1
+            u0
+          )),
+        status-updates: (+ (get status-updates rate-data)
+          (if (is-eq action-type u2)
+            u1
+            u0
+          )),
+      })
+    )
+  )
+)
